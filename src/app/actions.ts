@@ -1,8 +1,6 @@
 // @ts-nocheck
 "use server";
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 export async function extractBillAmount(formData: FormData): Promise<{ success: boolean, amount?: number, error?: string }> {
     try {
         const file = formData.get("billImage") as File | null;
@@ -10,17 +8,9 @@ export async function extractBillAmount(formData: FormData): Promise<{ success: 
             return { success: false, error: "Server nije primio datoteku. Veličina je 0." };
         }
 
-        // KORISNIKOV OSOBNI NOVI PAY-AS-YOU-GO KLJUČ 
         const apiKey = "AIzaSyAuZGURwRaNjxYJj32JVHapP5y27sOxINQ";
-
-        // FORSIRAMO 'v1' verziju jer tvoj Vercel uporno bježi u 'v1beta' koja je mrtva za Flash model.
-        const genAI = new GoogleGenerativeAI(apiKey, { apiVersion: "v1" } as any);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
         const arrayBuffer = await file.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const base64Data = buffer.toString("base64");
-
+        const base64Data = Buffer.from(arrayBuffer).toString("base64");
         const mimeType = file.type || "application/pdf";
 
         const prompt = `Analiziraj ovaj dokument (račun za struju). 
@@ -30,17 +20,36 @@ Pravila:
 2. Ako je to jedna mjesečna rata, ignoriraj druge dugove i vrati redovnu ratu.
 3. Vrati SAMO broj (npr. 319.64). Bez teksta i valuta.`;
 
-        const result = await model.generateContent([
-            {
-                inlineData: {
-                    data: base64Data,
-                    mimeType: mimeType,
-                },
+        // RAW FETCH POZIV NA GOOGLE API v1 (ZAOBILAZIMO SDK DA NAS NE J... VIŠE)
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
             },
-            prompt,
-        ]);
+            body: JSON.stringify({
+                contents: [
+                    {
+                        parts: [
+                            { text: prompt },
+                            {
+                                inline_data: {
+                                    mime_type: mimeType,
+                                    data: base64Data
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+        });
 
-        const responseText = result.response.text();
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(`Google API Error ${response.status}: ${data?.error?.message || "Nepoznato"}`);
+        }
+
+        const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
         const extractedNumber = parseFloat(responseText.replace(/[^\d.-]/g, ''));
 
         if (!isNaN(extractedNumber)) {
@@ -51,6 +60,6 @@ Pravila:
 
     } catch (error: any) {
         console.error("AI OCR Greška na Vercelu:", error);
-        return { success: false, error: "Google API Greška: " + (error.message || "Nepoznato - provjerite je li API ključ valjan i omogućeno plaćanje") };
+        return { success: false, error: "Konačna Greška: " + (error.message || "Nepoznato") };
     }
 }
